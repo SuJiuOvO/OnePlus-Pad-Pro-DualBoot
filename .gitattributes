@@ -1,0 +1,11 @@
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.patch text eol=lf
+caihong-flashlight text eol=lf
+*.bat text eol=crlf
+*.apk binary
+*.so binary
+*.img binary
+*.gz binary
+*.zst binary

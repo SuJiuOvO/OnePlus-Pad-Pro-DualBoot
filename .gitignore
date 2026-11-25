@@ -1,0 +1,31 @@
+# Upstream clones / local build caches
+caihong-linux-rootfs/
+Project-SunUEFI/
+build/
+scratch/
+__pycache__/
+*.pyc
+
+# Large deploy images, raw rootfs & stock backups (host on GitHub Releases instead)
+deploy/stock_boot_*.img
+deploy/stock_dtbo_*.img
+deploy/stock_vbmeta_*.img
+deploy/boot/
+deploy/rootfs/
+*.ext4
+*.raw.img
+*.sparse.img
+
+# Android Studio / Gradle local artifacts
+android_switcher/.gradle/
+android_switcher/.kotlin/
+android_switcher/.idea/
+android_switcher/local.properties
+android_switcher/build/
+android_switcher/*/build/
+android_switcher/*.iml
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini

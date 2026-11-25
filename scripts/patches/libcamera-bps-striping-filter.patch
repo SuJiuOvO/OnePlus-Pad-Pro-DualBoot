@@ -1,0 +1,42 @@
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 57039af..e1d4671 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -314,6 +314,21 @@ std::string findVideoDevice(const std::string &name)
+ 	return {};
+ }
+ 
++bool hasBpsStripingFirmware(const Size &size)
++{
++	const std::string filename =
++		"bps-striping-bggr10-nv12-" + std::to_string(size.width) +
++		"x" + std::to_string(size.height) + ".bin";
++	std::error_code error;
++	for (const char *dir : { "/lib/firmware/qcom/sm8650",
++				 "/usr/lib/firmware/qcom/sm8650" }) {
++		if (std::filesystem::exists(std::filesystem::path(dir) / filename,
++					    error))
++			return true;
++	}
++	return false;
++}
++
+ } /* namespace */
+ 
+ class SimpleCameraData : public Camera::Private
+@@ -1397,9 +1412,12 @@ void SimpleCameraData::tryPipeline(unsigned int code, const Size &size)
+ 		config.captureSize = format.size;
+ 
+ 		if (converter_) {
+-			config.outputFormats = converter_->formats(pixelFormat);
+-			config.outputSizes = pipe()->converterDeviceNode().empty() ?
+-				converter_->sizes(format.size) : SizeRange(format.size);
++			if (pipe()->converterDeviceNode().empty() ||
++			    hasBpsStripingFirmware(format.size)) {
++				config.outputFormats = converter_->formats(pixelFormat);
++				config.outputSizes = pipe()->converterDeviceNode().empty() ?
++					converter_->sizes(format.size) : SizeRange(format.size);
++			}
+ #ifdef HAVE_SOFTWARE_ISP
+ 		} else if (swIsp_) {
+ 			config.outputFormats = swIsp_->formats(pixelFormat);

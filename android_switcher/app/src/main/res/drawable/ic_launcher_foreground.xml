@@ -1,0 +1,76 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Subtle inner glass halo ring -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,32.5A21.5,21.5 0 1,1 53.99,32.5Z"
+        android:strokeAlpha="0.08"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.2" />
+
+    <!-- Top sweeping Android Emerald arc (198 deg -> 342 deg clockwise, r=21) -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M34.0,47.5A21,21 0 0,1 74.0,47.5"
+        android:strokeLineCap="round"
+        android:strokeWidth="5.6">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:endX="74"
+                android:endY="48"
+                android:startX="34"
+                android:startY="48"
+                android:type="linear">
+                <item android:color="#FF2DD4BF" android:offset="0.0" />
+                <item android:color="#FF10B981" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Clockwise arrowhead on top emerald arc -->
+    <path
+        android:fillColor="#FF10B981"
+        android:pathData="M75.5,50.8L68.4,47.6L74.2,42.3Z" />
+
+    <!-- Bottom sweeping Linux Coral arc (18 deg -> 162 deg clockwise, r=21) -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M74.0,60.5A21,21 0 0,1 34.0,60.5"
+        android:strokeLineCap="round"
+        android:strokeWidth="5.6">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:endX="34"
+                android:endY="60"
+                android:startX="74"
+                android:startY="60"
+                android:type="linear">
+                <item android:color="#FFFB923C" android:offset="0.0" />
+                <item android:color="#FFEA580C" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Clockwise arrowhead on bottom coral arc -->
+    <path
+        android:fillColor="#FFEA580C"
+        android:pathData="M32.5,57.2L39.6,60.4L33.8,65.7Z" />
+
+    <!-- Minimal crisp center Power/Boot core -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M59.2,48.8A8.5,8.5 0 1,1 48.8,48.8"
+        android:strokeColor="#FFF8FAFC"
+        android:strokeLineCap="round"
+        android:strokeWidth="3.2" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,43.5V52.5"
+        android:strokeColor="#FFF8FAFC"
+        android:strokeLineCap="round"
+        android:strokeWidth="3.2" />
+</vector>

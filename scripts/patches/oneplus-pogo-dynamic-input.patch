@@ -1,0 +1,334 @@
+diff --git a/drivers/input/keyboard/oneplus_pogo.c b/drivers/input/keyboard/oneplus_pogo.c
+index bb7ffe82f..f4900c0d2 100644
+--- a/drivers/input/keyboard/oneplus_pogo.c
++++ b/drivers/input/keyboard/oneplus_pogo.c
+@@ -127,6 +127,7 @@ static const u16 oneplus_pogo_keycode[256] = {
+ 
+ struct oneplus_pogo {
+ 	struct serdev_device *serdev;
++	struct input_dev *tablet_sw;
+ 	struct input_dev *keyboard;
+ 	struct input_dev *touchpad;
+ 	struct gpio_desc *power_gpio;
+@@ -134,6 +135,7 @@ struct oneplus_pogo {
+ 	struct gpio_desc *tx_enable_gpio;
+ 	struct regulator *vcc;
+ 	struct work_struct led_work;
++	struct work_struct input_work;
+ 	struct delayed_work setup_work;
+ 	struct delayed_work touchpad_work;
+ 	struct delayed_work presence_work;
+@@ -141,6 +143,7 @@ struct oneplus_pogo {
+ 	struct mutex lock;
+ 	/* Serializes half-duplex UART transmissions without blocking RX parsing. */
+ 	struct mutex tx_lock;
++	struct mutex input_lock;
+ 
+ 	u32 baud;
+ 	u32 x_max;
+@@ -337,6 +340,7 @@ static void oneplus_pogo_stop_delayed_work(void *data)
+ 	/* RX may still run until devm closes serdev; disallow any new queueing. */
+ 	disable_delayed_work_sync(&pogo->touchpad_work);
+ 	disable_delayed_work_sync(&pogo->presence_work);
++	disable_work_sync(&pogo->input_work);
+ }
+ 
+ static void oneplus_pogo_setup_work(struct work_struct *work)
+@@ -436,7 +440,7 @@ static void oneplus_pogo_report_keyboard(struct oneplus_pogo *pogo,
+ 	bool report_changed;
+ 	int i, j;
+ 
+-	if (len < sizeof(report))
++	if (len < sizeof(report) || !pogo->keyboard)
+ 		return;
+ 
+ 	memcpy(report, payload, sizeof(report));
+@@ -531,7 +535,7 @@ static void oneplus_pogo_report_media(struct oneplus_pogo *pogo,
+ 	bool report_changed;
+ 	int i, j;
+ 
+-	if (len < sizeof(report))
++	if (len < sizeof(report) || !pogo->keyboard)
+ 		return;
+ 
+ 	memcpy(report, payload, sizeof(report));
+@@ -579,7 +583,7 @@ static void oneplus_pogo_report_touchpad(struct oneplus_pogo *pogo,
+ 	int i;
+ 
+ 	/* Oplus format: contacts, finger count, then button bitmap. */
+-	if (len < 2)
++	if (len < 2 || !pogo->touchpad)
+ 		return;
+ 
+ 	fingers = payload[len - 2];
+@@ -622,8 +626,14 @@ static void oneplus_pogo_presence_work(struct work_struct *work)
+ 	mutex_lock(&pogo->lock);
+ 	if (pogo->attached) {
+ 		pogo->attached = false;
+-		input_report_switch(pogo->keyboard, SW_TABLET_MODE, 1);
+-		input_sync(pogo->keyboard);
++		memset(pogo->old_keys, 0, sizeof(pogo->old_keys));
++		memset(pogo->old_keycodes, 0, sizeof(pogo->old_keycodes));
++		memset(pogo->old_media, 0, sizeof(pogo->old_media));
++		memset(pogo->old_media_keycodes, 0, sizeof(pogo->old_media_keycodes));
++		pogo->fn_down = false;
++		input_report_switch(pogo->tablet_sw, SW_TABLET_MODE, 1);
++		input_sync(pogo->tablet_sw);
++		queue_work(system_dfl_wq, &pogo->input_work);
+ 		dev_info(&pogo->serdev->dev, "keyboard detached; tablet mode on\n");
+ 	}
+ 	mutex_unlock(&pogo->lock);
+@@ -668,8 +678,9 @@ static void oneplus_pogo_handle_frame(struct oneplus_pogo *pogo)
+ 	}
+ 	if (!pogo->attached) {
+ 		pogo->attached = true;
+-		input_report_switch(pogo->keyboard, SW_TABLET_MODE, 0);
+-		input_sync(pogo->keyboard);
++		input_report_switch(pogo->tablet_sw, SW_TABLET_MODE, 0);
++		input_sync(pogo->tablet_sw);
++		queue_work(system_dfl_wq, &pogo->input_work);
+ 		dev_info(&pogo->serdev->dev,
+ 			 "keyboard attached; tablet mode off\n");
+ 	}
+@@ -857,77 +868,161 @@ static struct attribute *oneplus_pogo_attrs[] = {
+ };
+ ATTRIBUTE_GROUPS(oneplus_pogo);
+ 
+-static int oneplus_pogo_register_inputs(struct oneplus_pogo *pogo)
++static int oneplus_pogo_register_switch(struct oneplus_pogo *pogo)
+ {
+ 	struct device *dev = &pogo->serdev->dev;
++
++	pogo->tablet_sw = devm_input_allocate_device(dev);
++	if (!pogo->tablet_sw)
++		return -ENOMEM;
++
++	pogo->tablet_sw->name = "OnePlus Pogo Tablet Mode Switch";
++	pogo->tablet_sw->phys = "oneplus-pogo/switch0";
++	pogo->tablet_sw->id.bustype = BUS_RS232;
++	pogo->tablet_sw->id.vendor = 0x22d9;
++	pogo->tablet_sw->id.product = 0x3869;
++	pogo->tablet_sw->id.version = 0x0010;
++	input_set_capability(pogo->tablet_sw, EV_SW, SW_TABLET_MODE);
++
++	return input_register_device(pogo->tablet_sw);
++}
++
++static int oneplus_pogo_attach_inputs(struct oneplus_pogo *pogo)
++{
++	struct device *dev = &pogo->serdev->dev;
++	struct input_dev *kbd, *tp;
+ 	int i, ret;
+ 
+-	pogo->keyboard = devm_input_allocate_device(dev);
+-	if (!pogo->keyboard)
++	kbd = input_allocate_device();
++	if (!kbd)
+ 		return -ENOMEM;
+ 
+-	pogo->keyboard->name = "OnePlus Pogo Keyboard";
+-	pogo->keyboard->phys = "oneplus-pogo/input0";
+-	pogo->keyboard->id.bustype = BUS_RS232;
+-	pogo->keyboard->id.vendor = 0x22d9;
+-	pogo->keyboard->id.product = 0x3869;
+-	pogo->keyboard->id.version = 0x0010;
+-	pogo->keyboard->event = oneplus_pogo_input_event;
+-	input_set_drvdata(pogo->keyboard, pogo);
+-	input_set_capability(pogo->keyboard, EV_LED, LED_CAPSL);
+-	input_set_capability(pogo->keyboard, EV_SW, SW_TABLET_MODE);
++	kbd->name = "OnePlus Pogo Keyboard";
++	kbd->phys = "oneplus-pogo/input0";
++	kbd->dev.parent = dev;
++	kbd->id.bustype = BUS_RS232;
++	kbd->id.vendor = 0x22d9;
++	kbd->id.product = 0x3869;
++	kbd->id.version = 0x0010;
++	kbd->event = oneplus_pogo_input_event;
++	input_set_drvdata(kbd, pogo);
++	input_set_capability(kbd, EV_LED, LED_CAPSL);
+ 	for (i = 0; i < ARRAY_SIZE(oneplus_pogo_keycode); i++)
+ 		if (oneplus_pogo_keycode[i])
+-			input_set_capability(pogo->keyboard, EV_KEY,
++			input_set_capability(kbd, EV_KEY,
+ 					     oneplus_pogo_keycode[i]);
+ 	for (i = 0; i < ARRAY_SIZE(oneplus_pogo_media_map); i++) {
+-		input_set_capability(pogo->keyboard, EV_KEY,
++		input_set_capability(kbd, EV_KEY,
+ 				     oneplus_pogo_media_map[i].keycode);
+ 		if (oneplus_pogo_media_map[i].fn_keycode)
+-			input_set_capability(pogo->keyboard, EV_KEY,
++			input_set_capability(kbd, EV_KEY,
+ 					     oneplus_pogo_media_map[i].fn_keycode);
+ 	}
+ 	for (i = 0; i < ARRAY_SIZE(oneplus_pogo_keyboard_map); i++) {
+-		input_set_capability(pogo->keyboard, EV_KEY,
++		input_set_capability(kbd, EV_KEY,
+ 				     oneplus_pogo_keyboard_map[i].keycode);
+ 		if (oneplus_pogo_keyboard_map[i].fn_keycode)
+-			input_set_capability(pogo->keyboard, EV_KEY,
++			input_set_capability(kbd, EV_KEY,
+ 					     oneplus_pogo_keyboard_map[i].fn_keycode);
+ 	}
+ 
+-	ret = input_register_device(pogo->keyboard);
+-	if (ret)
++	ret = input_register_device(kbd);
++	if (ret) {
++		input_free_device(kbd);
+ 		return ret;
++	}
+ 
+-	pogo->touchpad = devm_input_allocate_device(dev);
+-	if (!pogo->touchpad)
++	tp = input_allocate_device();
++	if (!tp) {
++		input_unregister_device(kbd);
+ 		return -ENOMEM;
++	}
+ 
+-	pogo->touchpad->name = "OnePlus Pogo Touchpad";
+-	pogo->touchpad->phys = "oneplus-pogo/input1";
+-	pogo->touchpad->id.bustype = BUS_RS232;
+-	pogo->touchpad->id.vendor = 0x22d9;
+-	pogo->touchpad->id.product = 0x3869;
+-	pogo->touchpad->id.version = 0x0010;
+-	__set_bit(INPUT_PROP_POINTER, pogo->touchpad->propbit);
+-	__set_bit(INPUT_PROP_BUTTONPAD, pogo->touchpad->propbit);
+-
+-	input_set_capability(pogo->touchpad, EV_KEY, BTN_TOUCH);
+-	input_set_capability(pogo->touchpad, EV_KEY, BTN_LEFT);
+-	input_set_capability(pogo->touchpad, EV_KEY, BTN_RIGHT);
+-	input_set_abs_params(pogo->touchpad, ABS_MT_POSITION_X,
+-			     0, pogo->x_max, 0, 0);
+-	input_set_abs_params(pogo->touchpad, ABS_MT_POSITION_Y,
+-			     0, pogo->y_max, 0, 0);
+-	input_abs_set_res(pogo->touchpad, ABS_MT_POSITION_X, pogo->x_res);
+-	input_abs_set_res(pogo->touchpad, ABS_MT_POSITION_Y, pogo->y_res);
+-
+-	ret = input_mt_init_slots(pogo->touchpad, POGO_MAX_TOUCHES,
++	tp->name = "OnePlus Pogo Touchpad";
++	tp->phys = "oneplus-pogo/input1";
++	tp->dev.parent = dev;
++	tp->id.bustype = BUS_RS232;
++	tp->id.vendor = 0x22d9;
++	tp->id.product = 0x3869;
++	tp->id.version = 0x0010;
++	__set_bit(INPUT_PROP_POINTER, tp->propbit);
++	__set_bit(INPUT_PROP_BUTTONPAD, tp->propbit);
++
++	input_set_capability(tp, EV_KEY, BTN_TOUCH);
++	input_set_capability(tp, EV_KEY, BTN_LEFT);
++	input_set_capability(tp, EV_KEY, BTN_RIGHT);
++	input_set_abs_params(tp, ABS_MT_POSITION_X, 0, pogo->x_max, 0, 0);
++	input_set_abs_params(tp, ABS_MT_POSITION_Y, 0, pogo->y_max, 0, 0);
++	input_abs_set_res(tp, ABS_MT_POSITION_X, pogo->x_res);
++	input_abs_set_res(tp, ABS_MT_POSITION_Y, pogo->y_res);
++
++	ret = input_mt_init_slots(tp, POGO_MAX_TOUCHES,
+ 				  INPUT_MT_POINTER | INPUT_MT_DROP_UNUSED);
+-	if (ret)
++	if (ret) {
++		input_free_device(tp);
++		input_unregister_device(kbd);
+ 		return ret;
++	}
++
++	ret = input_register_device(tp);
++	if (ret) {
++		input_free_device(tp);
++		input_unregister_device(kbd);
++		return ret;
++	}
++
++	mutex_lock(&pogo->lock);
++	pogo->keyboard = kbd;
++	pogo->touchpad = tp;
++	mutex_unlock(&pogo->lock);
++
++	return 0;
++}
++
++static void oneplus_pogo_detach_inputs(struct oneplus_pogo *pogo)
++{
++	struct input_dev *kbd, *tp;
++
++	mutex_lock(&pogo->lock);
++	kbd = pogo->keyboard;
++	tp = pogo->touchpad;
++	pogo->keyboard = NULL;
++	pogo->touchpad = NULL;
++	mutex_unlock(&pogo->lock);
+ 
+-	return input_register_device(pogo->touchpad);
++	if (tp)
++		input_unregister_device(tp);
++	if (kbd)
++		input_unregister_device(kbd);
++}
++
++static void oneplus_pogo_unregister_inputs_action(void *data)
++{
++	oneplus_pogo_detach_inputs(data);
++}
++
++static void oneplus_pogo_input_work(struct work_struct *work)
++{
++	struct oneplus_pogo *pogo = container_of(work, struct oneplus_pogo,
++						  input_work);
++	bool attached, have_inputs;
++	int ret;
++
++	mutex_lock(&pogo->input_lock);
++	mutex_lock(&pogo->lock);
++	attached = pogo->attached;
++	have_inputs = pogo->keyboard && pogo->touchpad;
++	mutex_unlock(&pogo->lock);
++
++	if (attached && !have_inputs) {
++		ret = oneplus_pogo_attach_inputs(pogo);
++		if (ret)
++			dev_err(&pogo->serdev->dev,
++				"failed to register attached pogo inputs: %d\n", ret);
++	} else if (!attached && have_inputs) {
++		oneplus_pogo_detach_inputs(pogo);
++	}
++	mutex_unlock(&pogo->input_lock);
+ }
+ 
+ static int oneplus_pogo_probe(struct serdev_device *serdev)
+@@ -953,7 +1048,9 @@ static int oneplus_pogo_probe(struct serdev_device *serdev)
+ 	pogo->touchpad_target_enabled = true;
+ 	mutex_init(&pogo->lock);
+ 	mutex_init(&pogo->tx_lock);
++	mutex_init(&pogo->input_lock);
+ 	INIT_WORK(&pogo->led_work, oneplus_pogo_led_work);
++	INIT_WORK(&pogo->input_work, oneplus_pogo_input_work);
+ 	INIT_DELAYED_WORK(&pogo->setup_work, oneplus_pogo_setup_work);
+ 	INIT_DELAYED_WORK(&pogo->touchpad_work, oneplus_pogo_touchpad_work);
+ 	INIT_DELAYED_WORK(&pogo->presence_work, oneplus_pogo_presence_work);
+@@ -1013,12 +1110,22 @@ static int oneplus_pogo_probe(struct serdev_device *serdev)
+ 	if (pogo->wake_gpio)
+ 		wake_before_power = gpiod_get_value_cansleep(pogo->wake_gpio);
+ 
+-	ret = oneplus_pogo_register_inputs(pogo);
++	ret = oneplus_pogo_register_switch(pogo);
+ 	if (ret)
+ 		goto disable_vcc;
+ 	pogo->attached = wake_before_power > 0;
+-	input_report_switch(pogo->keyboard, SW_TABLET_MODE, !pogo->attached);
+-	input_sync(pogo->keyboard);
++	input_report_switch(pogo->tablet_sw, SW_TABLET_MODE, !pogo->attached);
++	input_sync(pogo->tablet_sw);
++
++	ret = devm_add_action_or_reset(dev, oneplus_pogo_unregister_inputs_action, pogo);
++	if (ret)
++		goto disable_vcc;
++
++	if (pogo->attached) {
++		ret = oneplus_pogo_attach_inputs(pogo);
++		if (ret)
++			goto disable_vcc;
++	}
+ 
+ 	serdev_device_set_client_ops(serdev, &oneplus_pogo_serdev_ops);
+ 	ret = devm_serdev_device_open(dev, serdev);

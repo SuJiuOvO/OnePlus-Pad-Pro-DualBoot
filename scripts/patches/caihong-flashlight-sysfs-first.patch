@@ -1,0 +1,145 @@
+diff --git a/rootfs/archlinuxarm/usr/local/sbin/caihong-flashlight b/rootfs/archlinuxarm/usr/local/sbin/caihong-flashlight
+index caf0a1f..0181b84 100755
+--- a/rootfs/archlinuxarm/usr/local/sbin/caihong-flashlight
++++ b/rootfs/archlinuxarm/usr/local/sbin/caihong-flashlight
+@@ -4,7 +4,7 @@
+ set -eu
+ 
+ usage() {
+-	echo "usage: caihong-flashlight {on [0-100]|off|status}" >&2
++	echo "usage: caihong-flashlight {on [0-100]|off|status} [rear|all]" >&2
+ 	exit 2
+ }
+ 
+@@ -32,74 +32,91 @@ case "$target" in
+ 	*) usage ;;
+ esac
+ 
+-target_matches_name() {
+-	case "$target:$1" in
+-		rear:*|all:*) return 0 ;;
+-		*) return 1 ;;
+-	esac
++# OnePlus Pad Pro (Caihong) wires its rear LED flash to PM8550 ch0 (yellow:flash-0).
++# Ch1 (white:flash) is unpopulated and raises open-circuit fault (0xee06=0x08).
++sysfs_flash_nodes() {
++	if [ "$target" = rear ] && [ -d /sys/class/leds/yellow:flash-0 ]; then
++		echo /sys/class/leds/yellow:flash-0
++		return 0
++	fi
++	for node in /sys/class/leds/*:flash-0 /sys/class/leds/*:flash-* /sys/class/leds/*:flash; do
++		[ -d "$node" ] || continue
++		case "$target:${node##*/}" in
++			rear:white:*) continue ;;
++		esac
++		echo "$node"
++	done
+ }
+ 
+-flash_nodes() {
++# Only query V4L2 flash subdevs (never probe csiphy/isp subdevs, which can block in ioctl).
++v4l_flash_nodes() {
++	command -v v4l2-ctl >/dev/null 2>&1 || return 0
+ 	for node in /dev/v4l-subdev*; do
+ 		[ -e "$node" ] || continue
+ 		name=$(cat "/sys/class/video4linux/${node##*/}/name" 2>/dev/null || true)
+-	target_matches_name "$name" || continue
+-		if v4l2-ctl -d "$node" --all 2>/dev/null | grep -q '^Flash Controls'; then
++		case "$name" in
++			*flash*) ;;
++			*) continue ;;
++		esac
++		if [ "$target" = rear ] && [ "$name" = "white:flash" ] && [ -d /sys/class/leds/yellow:flash-0 ]; then
++			continue
++		fi
++		if timeout 2 v4l2-ctl -d "$node" --all 2>/dev/null | grep -q '^Flash Controls'; then
+ 			echo "$node"
+ 		fi
+ 	done
+ }
+ 
+-sysfs_flash_nodes() {
+-	for node in /sys/class/leds/*:flash /sys/class/leds/*:flash-*; do
+-		[ -d "$node" ] || continue
+-		target_matches_name "${node##*/}" || continue
+-		echo "$node"
+-	done
+-}
++nodes=$(sysfs_flash_nodes)
++if [ -n "$nodes" ]; then
++	if [ "$command" = status ]; then
++		brightness=0
++		for node in $nodes; do
++			value=$(cat "$node/brightness" 2>/dev/null || echo 0)
++			[ "$value" -gt "$brightness" ] && brightness=$value
++		done
++		printf 'rear: brightness=%s\n' "$brightness"
++		exit 0
++	fi
+ 
+-if command -v v4l2-ctl >/dev/null 2>&1; then
+-	set -- $(flash_nodes)
+-else
+-	set --
++	for node in $nodes; do
++		if [ "$command" = on ]; then
++			if [ "$requested_level" -eq 0 ]; then
++				val=0
++			else
++				val=$(( (requested_level * 255 + 50) / 100 ))
++				[ "$val" -ge 1 ] || val=1
++				[ "$val" -le 255 ] || val=255
++			fi
++			printf '%s\n' "$val" > "$node/brightness"
++		else
++			printf '0\n' > "$node/brightness"
++		fi
++	done
++	exit 0
+ fi
+ 
++set -- $(v4l_flash_nodes)
+ if [ "$command" = status ]; then
+ 	if [ "$#" -gt 0 ]; then
+-		# The white and yellow PMIC channels form one physical rear lamp.
+ 		printf 'rear: '
+-		v4l2-ctl -d "$1" --get-ctrl=led_mode,intensity_torch_mode 2>/dev/null || true
++		timeout 2 v4l2-ctl -d "$1" --get-ctrl=led_mode,intensity_torch_mode 2>/dev/null || true
+ 	else
+-		brightness=0
+-		for node in $(sysfs_flash_nodes); do
+-			value=$(cat "$node/brightness")
+-			[ "$value" -gt "$brightness" ] && brightness=$value
+-		done
+-		printf 'rear: brightness=%s\n' "$brightness"
++		echo 'rear: brightness=0'
+ 	fi
+ 	exit 0
+ fi
+ 
+ if [ "$#" -gt 0 ]; then
+ 	if [ "$command" = on ]; then
+-		# The PM8550 flash driver accepts 5,000..500,000 in 5,000 steps.
+ 		intensity=$((requested_level * 500000 / 100))
+-		[ "$intensity" -ge 5000 ] || intensity=5000
++		[ "$intensity" -ge 12500 ] || intensity=12500
+ 		for node do
+-			v4l2-ctl -d "$node" --set-ctrl="intensity_torch_mode=$intensity,led_mode=2"
++			timeout 2 v4l2-ctl -d "$node" --set-ctrl="intensity_torch_mode=$intensity,led_mode=2"
+ 		done
+ 	else
+ 		for node do
+-			v4l2-ctl -d "$node" --set-ctrl=led_mode=0
++			timeout 2 v4l2-ctl -d "$node" --set-ctrl=led_mode=0
+ 		done
+ 	fi
+-	exit 0
+ fi
+-
+-for node in $(sysfs_flash_nodes); do
+-	if [ "$command" = on ]; then
+-		printf '%s\n' $((requested_level * 255 / 100)) >"$node/brightness"
+-	else
+-		printf '0\n' >"$node/brightness"
+-	fi
+-done
